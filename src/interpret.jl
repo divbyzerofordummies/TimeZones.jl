@@ -89,6 +89,44 @@ context typically return 0-2 results while the UTC context will always return 1 
 """
 interpret(::DateTime, ::VariableTimeZone, ::Type{Union{Local,UTC}})
 
+
+"""
+    interpret(local_dts::AbstractVector{Dates.DateTime}, tz::VariableTimeZone, context::Type{Union{Local,UTC}}) -> Vector{ZonedDateTime}
+
+Convert a vector of `Dates.DateTime` into `TimeZones.ZonedDateTime` with the given timezone `tz`.
+
+This method requires a vector of timestamps that are sorted (except for jumps backwards in time at, e.g., the change from summer time to winter time in CET)
+and are sampled at 1 hour or less.
+It recognizes these jump backwards in time and uses them to resolve the ambiguity in timestamps such as `Dates.DateTime(2023,10,29,2,10)` in CET, 
+which can either be 0:00 or 1:00 UTC.
+"""
+function interpret(local_dts::AbstractVector{Dates.DateTime}, tz::VariableTimeZone, T::Type{<:Union{Local,UTC}}=Local)
+    dt_previous = Dates.DateTime(0)
+    i_hour = 0
+    # local_tz = Vector{ZonedDateTime}(undef, length(local_dt))
+    return [
+        begin
+            possible = interpret(local_dt, tz, T)
+            local_tz = if length(possible) > 1
+                if i_hour == 0 # first occurrence of an ambiguous time stamp --> must be first hour
+                    i_hour = 1
+                elseif i_hour == 1 && local_dt <= dt_previous # e.g., jump from 2:59 to 2:00 or second occurrence of 2:00
+                    # second occurrence of 2:00 --> change "hour"
+                    i_hour = 2
+                end
+                possible[i_hour]
+            else
+                # default case, we have passed the "ambiguity zone"
+                i_hour = 0
+                first(possible)
+            end
+            dt_previous = local_dt
+            local_tz
+        end
+        for local_dt in local_dts
+    ]
+end
+
 """
     shift_gap(local_dt::DateTime, tz::VariableTimeZone) -> Tuple
 
@@ -102,7 +140,7 @@ saving time or offset changes (shift).
 """
 function shift_gap(local_dt::DateTime, tz::VariableTimeZone)
     r = transition_range(local_dt, tz, Local)
-    boundaries = if isempty(r) && last(r) > 0
+    boundaries = if isempty(r) && last(r) > 0 # FIXME: This can't be right? !isempty? Does not seem to have been tested?
         t = tz.transitions
         i, j = last(r), first(r)  # Empty range has the indices we want but backwards
         tuple(

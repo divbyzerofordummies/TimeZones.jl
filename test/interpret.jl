@@ -1,5 +1,5 @@
-using Dates: Millisecond
-using TimeZones: transition_range
+using Dates: Millisecond, Hour, Minute, DateTime
+using TimeZones: transition_range, interpret
 
 @testset "lt_local / lt_utc" begin
     t = Transition(DateTime(1977, 5, 26, 1), FixedTimeZone("PDT", -8 * 3600, 3600))
@@ -76,6 +76,28 @@ end
         @test transition_range(DateTime(1950, 09, 01, 00), tz, UTC) == 3:3  # 00:00 TST
         @test transition_range(DateTime(1950, 09, 02, 00), tz, UTC) == 3:3  # 01:00 TST
         @test transition_range(DateTime(1950, 09, 03, 00), tz, UTC) == 3:3
+    end
+end
+
+@testset "interpret (Vector)" begin
+    # Test correct handling of ambiguity when converting vectors of `DateTime`s.
+    t0s = Dict(
+        "winter2summer" => DateTime(2023,03,25,23,5), # Change to summer time on March 26th --> should not be a problem, 1 --> 3 h
+        "summer2winter" => DateTime(2023,10,28,23,5), # Change to winter time on October 29th --> now it gets interesting
+    )
+    # change to summer time is on Sunday, March 26th 2:00
+    dt = Minute(13) # use unusual increment to really test functionality
+    for (testcase, t0) in t0s
+        @testset "$testcase" begin
+            # Create a vector of times that are potentially ambiguous
+            utc_dts = t0:dt:t0+Hour(6)
+            utc_tzs = ZonedDateTime.(utc_dts, TimeZones.tz"UTC")
+            local_tzs = astimezone.(utc_tzs, TimeZones.tz"Europe/Vienna")
+            local_dts = DateTime.(local_tzs) # lose timezone information
+            local_tzs_from_dts = interpret(local_dts, TimeZones.tz"Europe/Vienna", Local)
+            @test all(local_tzs_from_dts .== local_tzs)
+            @test all(diff(local_tzs_from_dts) .== dt)
+        end
     end
 end
 
