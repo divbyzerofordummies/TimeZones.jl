@@ -130,23 +130,95 @@ function interpret(local_dts::AbstractVector{Dates.DateTime}, tz::VariableTimeZo
         i_begin_ambiguous = idx_begin_ambiguous[i_ambiguous]
         i_end_ambiguous = idx_end_ambiguous[i_ambiguous]
         n_ambiguous_samples = i_end_ambiguous - i_begin_ambiguous + 1
+        
         # Try to extrapolate surrounding data to check whether the data matches the expected values
-        # TODO: Assumes constant sample time
-        expected_local_tzs = if i_begin_ambiguous > 2
+        sample_period, expected_local_tzs, last_tz, next_tz = if i_begin_ambiguous > 2
             sample_period = local_dts[i_begin_ambiguous-1] - local_dts[i_begin_ambiguous-2]
-            local_tzs[i_begin_ambiguous-1] .+ (1:n_ambiguous_samples) .* sample_period
-        elseif i_end_ambiguous < n_samples-2
-            local_dts[i_end_ambiguous+2] - local_dts[i_end_ambiguous+1]
-            local_tzs[i_end_ambiguous+1] .- (n_ambiguous_samples:-1:1) .* sample_period
+            last_tz = local_tzs[i_begin_ambiguous-1]
+            next_tz = if i_end_ambiguous < n_samples
+                local_tzs[i_end_ambiguous+1]
+            else
+                nothing
+            end
+            sample_period, last_tz .+ (1:n_ambiguous_samples) .* sample_period, last_tz, next_tz
+        elseif i_end_ambiguous < n_samples-1
+            # interval starts at the beginning of data
+            sample_period = local_dts[i_end_ambiguous+2] - local_dts[i_end_ambiguous+1]
+            next_tz = local_tzs[i_end_ambiguous+1]
+            sample_period, next_tz .- (n_ambiguous_samples:-1:1) .* sample_period, nothing, next_tz
         else
             # Missing context, cannot resolve ambiguity
             throw(AmbiguousTimeError(local_dts[i_begin_ambiguous], tz))
         end
+
+        # if no information about order is available, we cannot resolve the ambiguity
+        sample_period == Dates.Second(0) && throw(AmbiguousTimeError(local_dts[i_begin_ambiguous], tz))
+
+        # Check for constant sample time --> if this is the case, we can be very sure of the resolution of the ambiguity
+        has_constant_sample_time = true
         for i = 1:n_ambiguous_samples
             idx = i_begin_ambiguous+i-1
             # If the possibilities do not match expected data, we cannot resolve the ambiguity
-            !any(possibilities[idx] .== expected_local_tzs[i]) && throw(AmbiguousTimeError(local_dts[idx], tz))
+            if !any(possibilities[idx] .== expected_local_tzs[i])
+                has_constant_sample_time = false
+                break
+            end
             local_tzs[idx] = expected_local_tzs[i]
+        end
+        if !has_constant_sample_time
+            # We could not determine the values from extrapolating the surrounding data; but maybe they are simply sorted?
+            # We can only be sure if BOTH ambiguous options appear in the data
+            # Otherwise we will throw since we cannot be completely sure that the ambiguity was correctly resolved!
+            is_ascending = sample_period > Dates.Second(0)
+            includes_jump = false
+            for i = 1:n_ambiguous_samples
+                idx = i_begin_ambiguous+i-1
+                if is_ascending
+                    # we expect to find consecutively increasing times
+                    if isnothing(last_tz) # no context, start with the earliest option
+                        local_tzs[idx] = first(possibilities[idx])
+                        last_tz = local_tzs[idx]
+                        continue
+                    end
+                    last(possibilities[idx]) > last_tz || throw(AmbiguousTimeError(local_dts[idx], tz))
+                    # Start with earlier possibility, then later one
+                    if first(possibilities[idx]) > last_tz # no jump backwards in time
+                        local_tzs[idx] = first(possibilities[idx])
+                    else
+                        local_tzs[idx] = last(possibilities[idx])
+                        includes_jump = true
+                    end
+                    last_tz = local_tzs[idx]
+                else
+                    # we expect to find consecutively decreasing times
+                    if isnothing(last_tz) # no context, start with the later option
+                        local_tzs[idx] = last(possibilities[idx])
+                        last_tz = local_tzs[idx]
+                        continue
+                    end
+                    first(possibilities[idx]) < last_tz || throw(AmbiguousTimeError(local_dts[idx], tz))
+                    # Start with later possibility, then earlier one
+                    if last(possibilities[idx]) < last_tz # no jump forward in time
+                        local_tzs[idx] = last(possibilities[idx])
+                    else
+                        local_tzs[idx] = first(possibilities[idx])
+                        includes_jump = true
+                    end
+                    last_tz = local_tzs[idx]
+                end
+            end
+
+            # If we do not have two occurrences of an ambiguous time in a sorted list, then we cannot know which one we should pick
+            !includes_jump && throw(AmbiguousTimeError(local_dts[i_begin_ambiguous], tz))
+
+            # If we have more information, we must check whether the ascending / descending order is violated
+            if !isnothing(next_tz)
+                if is_ascending
+                    last_tz < next_tz || throw(AmbiguousTimeError(local_dts[i_end_ambiguous], tz))
+                else
+                    last_tz > next_tz || throw(AmbiguousTimeError(local_dts[i_end_ambiguous], tz))
+                end
+            end
         end
     end
     return local_tzs

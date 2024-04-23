@@ -112,10 +112,15 @@ end
     @test_throws AmbiguousTimeError interpret(local_dts, TimeZones.tz"Europe/Vienna", Local)
 
     utc_dts_sorted = t0s["summer 2 winter"] .+ (-Hour(3):Hour(1):Hour(3))
-    # Non-constant sampling time -- cannot resolve ambiguity at the moment --> TODO: Could be resolved
+    # Non-constant sampling time, but sorted --> should be resolved
     utc_dts = utc_dts_sorted[[1,2,4,5,6,7]]
     local_dts, local_tzs = utc2local(utc_dts)
-    @test_throws AmbiguousTimeError interpret(local_dts, TimeZones.tz"Europe/Vienna", Local)
+    local_tzs_from_dts = interpret(local_dts, TimeZones.tz"Europe/Vienna", Local)
+    @test all(local_tzs_from_dts .== local_tzs)
+    utc_dts = utc_dts_sorted[[7,5,4,3,2,1]]
+    local_dts, local_tzs = utc2local(utc_dts)
+    local_tzs_from_dts = interpret(local_dts, TimeZones.tz"Europe/Vienna", Local)
+    @test all(local_tzs_from_dts .== local_tzs)
     # Non-sorted vector --> cannot resolve ambiguity at all
     utc_dts = utc_dts_sorted[[1,3,2,5,7,6,4]]
     local_dts, local_tzs = utc2local(utc_dts)
