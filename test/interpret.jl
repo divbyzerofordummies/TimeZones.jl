@@ -81,24 +81,45 @@ end
 
 @testset "interpret (Vector)" begin
     # Test correct handling of ambiguity when converting vectors of `DateTime`s.
+    # Start some hours before the critical point, end some hours afterwards
+    # Critical points are defined in UTC
     t0s = Dict(
-        "winter2summer" => DateTime(2023,03,25,23,5), # Change to summer time on March 26th --> should not be a problem, 1 --> 3 h
-        "summer2winter" => DateTime(2023,10,28,23,5), # Change to winter time on October 29th --> now it gets interesting
+        "winter 2 summer" => DateTime(2023,03,26,0,0), # Change to summer time on March 26th --> should not be a problem, jump from 1:00 to 3:00
+        "summer 2 winter" => DateTime(2023,10,29,0,0), # Change to winter time on October 29th --> now it gets interesting, 2:00 appears twice
     )
-    # change to summer time is on Sunday, March 26th 2:00
     dt = Minute(13) # use unusual increment to really test functionality
+    function utc2local(utc_dts::AbstractVector{DateTime})
+        utc_tzs = ZonedDateTime.(utc_dts, TimeZones.tz"UTC")
+        local_tzs = astimezone.(utc_tzs, TimeZones.tz"Europe/Vienna")
+        local_dts = DateTime.(local_tzs) # lose timezone information
+        return local_dts, local_tzs
+    end
     for (testcase, t0) in t0s
-        @testset "$testcase" begin
-            # Create a vector of times that are potentially ambiguous
-            utc_dts = t0:dt:t0+Hour(6)
-            utc_tzs = ZonedDateTime.(utc_dts, TimeZones.tz"UTC")
-            local_tzs = astimezone.(utc_tzs, TimeZones.tz"Europe/Vienna")
-            local_dts = DateTime.(local_tzs) # lose timezone information
-            local_tzs_from_dts = interpret(local_dts, TimeZones.tz"Europe/Vienna", Local)
-            @test all(local_tzs_from_dts .== local_tzs)
-            @test all(diff(local_tzs_from_dts) .== dt)
+        for is_ascending in [true, false]
+            @testset "$testcase $(is_ascending ? "ascending" : "descending")" begin
+                # Create a vector of times that are potentially ambiguous, but sorted with a constant sampling time
+                utc_dts = is_ascending ? (t0-Hour(3):dt:t0+Hour(3)) : (t0+Hour(3):-dt:t0-Hour(3))
+                local_dts, local_tzs = utc2local(utc_dts)
+                local_tzs_from_dts = interpret(local_dts, TimeZones.tz"Europe/Vienna", Local)
+                @test all(local_tzs_from_dts .== local_tzs)
+                @test all(diff(local_tzs_from_dts) .== (is_ascending ? dt : -dt))
+            end
         end
     end
+    # Border case: No context available, cannot resolve ambiguity
+    utc_dts = [t0s["summer 2 winter"]]
+    local_dts, local_tzs = utc2local(utc_dts)
+    @test_throws AmbiguousTimeError interpret(local_dts, TimeZones.tz"Europe/Vienna", Local)
+
+    utc_dts_sorted = t0s["summer 2 winter"] .+ (-Hour(3):Hour(1):Hour(3))
+    # Non-constant sampling time -- cannot resolve ambiguity at the moment --> TODO: Could be resolved
+    utc_dts = utc_dts_sorted[[1,2,4,5,6,7]]
+    local_dts, local_tzs = utc2local(utc_dts)
+    @test_throws AmbiguousTimeError interpret(local_dts, TimeZones.tz"Europe/Vienna", Local)
+    # Non-sorted vector --> cannot resolve ambiguity at all
+    utc_dts = utc_dts_sorted[[1,3,2,5,7,6,4]]
+    local_dts, local_tzs = utc2local(utc_dts)
+    @test_throws AmbiguousTimeError interpret(local_dts, TimeZones.tz"Europe/Vienna", Local)
 end
 
 # Contains both positive and negative UTC offsets and observes daylight saving time.

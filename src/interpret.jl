@@ -101,30 +101,55 @@ It recognizes these jump backwards in time and uses them to resolve the ambiguit
 which can either be 0:00 or 1:00 UTC.
 """
 function interpret(local_dts::AbstractVector{Dates.DateTime}, tz::VariableTimeZone, T::Type{<:Union{Local,UTC}}=Local)
-    dt_previous = Dates.DateTime(0)
-    i_hour = 0
-    # local_tz = Vector{ZonedDateTime}(undef, length(local_dt))
-    return [
-        begin
-            possible = interpret(local_dt, tz, T)
-            local_tz = if length(possible) > 1
-                if i_hour == 0 # first occurrence of an ambiguous time stamp --> must be first hour
-                    i_hour = 1
-                elseif i_hour == 1 && local_dt <= dt_previous # e.g., jump from 2:59 to 2:00 or second occurrence of 2:00
-                    # second occurrence of 2:00 --> change "hour"
-                    i_hour = 2
-                end
-                possible[i_hour]
-            else
-                # default case, we have passed the "ambiguity zone"
-                i_hour = 0
-                first(possible)
-            end
-            dt_previous = local_dt
-            local_tz
+
+    possibilities = interpret.(local_dts, Ref(tz), Ref(T))
+    n_possibilities = length.(possibilities)
+    is_ambiguous = n_possibilities .> 1
+    !any(is_ambiguous) && (return first.(possibilities))
+
+    any(n_possibilities .== 0) && throw(NonExistentTimeError(local_dts[findfirst(n_possibilities .== 0)], tz))
+
+    # Cannot handle ambiguity with less than three values
+    n_samples = length(local_dts)
+    n_samples < 3 && throw(AmbiguousTimeError(local_dts[findfirst(is_ambiguous)], tz))
+   
+    idx_non_ambiguous = findall(.!is_ambiguous)
+    local_tzs = Vector{ZonedDateTime}(undef, n_samples)
+    local_tzs[idx_non_ambiguous] = first.(possibilities[idx_non_ambiguous])
+
+    # Find ranges with ambiguity; TODO: Could be implemented more efficiently
+    delta_is_ambiguous = diff(Int.(is_ambiguous))
+    idx_begin_ambiguous = findall(delta_is_ambiguous .== 1) .+ 1
+    is_ambiguous[1] && pushfirst!(idx_begin_ambiguous, 1)
+    idx_end_ambiguous = findall(delta_is_ambiguous .== -1) # last ambiguous element
+    is_ambiguous[end] && push!(idx_end_ambiguous, n_samples)
+    @assert length(idx_begin_ambiguous) == length(idx_end_ambiguous)
+
+    # Try to extrapolate from non-ambiguous data to find most probable resolution for ambiguity
+    for i_ambiguous in eachindex(idx_begin_ambiguous)
+        i_begin_ambiguous = idx_begin_ambiguous[i_ambiguous]
+        i_end_ambiguous = idx_end_ambiguous[i_ambiguous]
+        n_ambiguous_samples = i_end_ambiguous - i_begin_ambiguous + 1
+        # Try to extrapolate surrounding data to check whether the data matches the expected values
+        # TODO: Assumes constant sample time
+        expected_local_tzs = if i_begin_ambiguous > 2
+            sample_period = local_dts[i_begin_ambiguous-1] - local_dts[i_begin_ambiguous-2]
+            local_tzs[i_begin_ambiguous-1] .+ (1:n_ambiguous_samples) .* sample_period
+        elseif i_end_ambiguous < n_samples-2
+            local_dts[i_end_ambiguous+2] - local_dts[i_end_ambiguous+1]
+            local_tzs[i_end_ambiguous+1] .- (n_ambiguous_samples:-1:1) .* sample_period
+        else
+            # Missing context, cannot resolve ambiguity
+            throw(AmbiguousTimeError(local_dts[i_begin_ambiguous], tz))
         end
-        for local_dt in local_dts
-    ]
+        for i = 1:n_ambiguous_samples
+            idx = i_begin_ambiguous+i-1
+            # If the possibilities do not match expected data, we cannot resolve the ambiguity
+            !any(possibilities[idx] .== expected_local_tzs[i]) && throw(AmbiguousTimeError(local_dts[idx], tz))
+            local_tzs[idx] = expected_local_tzs[i]
+        end
+    end
+    return local_tzs
 end
 
 """
