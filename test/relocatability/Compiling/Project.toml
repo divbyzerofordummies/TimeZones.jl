@@ -1,0 +1,8 @@
+name = "Compiling"
+uuid = "2fd69ea2-a6cb-4cf5-97f2-c90aa53215c0"
+authors = ["Daniel Muschick <daniel.muschick@best-research.eu>"]
+version = "0.1.0"
+
+[deps]
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+TimeZones = "f269a46b-ccf7-5d73-abea-4c690281aa53"
